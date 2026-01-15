@@ -1,56 +1,103 @@
 from funasr import AutoModel
+import argparse
 import json
+import os
 from pathlib import Path
-import re
 
 # ==============================================================================
-# 1. KHỞI TẠO MODEL (FULL PARAMETERS)
+# 1. CẤU HÌNH / MODEL / RUNNER (CLI-FRIENDLY)
 # ==============================================================================
-# Lưu ý: Bắt buộc phải có punc_model để tránh lỗi UnboundLocalError khi dùng VAD
-model = AutoModel(
-    # --- Model paths ---
-    model=r"D:\0_code\3.Full-pipeline\fun-asr\models\iic\speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-    vad_model=r"D:\0_code\3.Full-pipeline\fun-asr\models\iic\speech_fsmn_vad_zh-cn-16k-common-pytorch",
-    punc_model=r"D:\0_code\3.Full-pipeline\fun-asr\models\iic\punc_ct-transformer_cn-en-common-vocab471067-large",
-    
-    # --- System Config ---
-    device="cuda",          # "cuda" hoặc "cpu"
-    ncpu=4,                 # Số luồng CPU (nếu dùng cpu)
-    disable_update=True,    # Không check update mỗi lần chạy
-    disable_log=True,       # Tắt log rác
-    
-    # --- VAD Config (Cấu hình cắt gọt im lặng) ---
-    # Đây là chỗ chỉnh để cắt câu tốt hơn ngay từ đầu vào
-    vad_kwargs={
-        "max_single_segment_time": 30000,  # (ms) Tối đa 1 đoạn audio gửi vào model là 30s
-        "max_end_silence_time": 400,       # (ms) Im lặng 400ms là cắt câu luôn (giảm số này để câu ngắn hơn)
-    },
-)
+def _default_model_paths():
+    """
+    Default theo file gốc (Windows path), nhưng nếu không tồn tại thì fallback
+    qua đường dẫn tương đối trong repo.
+    """
+    win = {
+        "model": r"D:\0_code\3.Full-pipeline\fun-asr\models\iic\speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "vad_model": r"D:\0_code\3.Full-pipeline\fun-asr\models\iic\speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        "punc_model": r"D:\0_code\3.Full-pipeline\fun-asr\models\iic\punc_ct-transformer_cn-en-common-vocab471067-large",
+    }
+    if all(Path(v).exists() for v in win.values()):
+        return win
+
+    root = Path(__file__).resolve().parent
+    return {
+        "model": str(
+            root
+            / "models/iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+        ),
+        "vad_model": str(root / "models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+        "punc_model": str(
+            root / "models/iic/punc_ct-transformer_cn-en-common-vocab471067-large"
+        ),
+    }
+
+
+def build_model(
+    *,
+    model_path: str,
+    vad_model_path: str,
+    punc_model_path: str,
+    device: str,
+    ncpu: int,
+    max_single_segment_time: int,
+    max_end_silence_time: int,
+):
+    # Bắt buộc phải có punc_model để tránh lỗi UnboundLocalError khi dùng VAD
+    return AutoModel(
+        model=model_path,
+        vad_model=vad_model_path,
+        punc_model=punc_model_path,
+        device=device,
+        ncpu=ncpu,
+        disable_update=True,
+        disable_log=True,
+        vad_kwargs={
+            "max_single_segment_time": max_single_segment_time,
+            "max_end_silence_time": max_end_silence_time,
+        },
+    )
+
+
+def run_asr(
+    *,
+    audio_path: str,
+    device: str,
+    ncpu: int,
+    batch_size_s: int,
+    hotword: str,
+    hotword_weight: float,
+    disable_punc: bool,
+    disable_itn: bool,
+    model_path: str,
+    vad_model_path: str,
+    punc_model_path: str,
+    max_single_segment_time: int,
+    max_end_silence_time: int,
+):
+    model = build_model(
+        model_path=model_path,
+        vad_model_path=vad_model_path,
+        punc_model_path=punc_model_path,
+        device=device,
+        ncpu=ncpu,
+        max_single_segment_time=max_single_segment_time,
+        max_end_silence_time=max_end_silence_time,
+    )
+
+    return model.generate(
+        input=audio_path,
+        batch_size_s=batch_size_s,
+        sentence_timestamp=True,  # Bắt buộc True để lấy timestamp từng từ
+        return_raw_text=False,
+        hotword=hotword,
+        hotword_weight=hotword_weight,
+        disable_punc=disable_punc,
+        disable_itn=disable_itn,
+    )
 
 # ==============================================================================
-# 2. CHẠY NHẬN DIỆN (FULL PARAMETERS)
-# ==============================================================================
-audio_path = r"D:\0_code\3.Full-pipeline\fun-asr\Tập 1.flac"
-
-res = model.generate(
-    input=audio_path,
-    
-    # --- Hiệu năng ---
-    batch_size_s=300,       # Lượng audio xử lý 1 lần (càng to càng nhanh nhưng tốn VRAM)
-    
-    # --- Output Control ---
-    sentence_timestamp=True,# Bắt buộc True để lấy timestamp từng từ
-    return_raw_text=False,  # False = lấy text đẹp, True = lấy text thô
-    
-    # --- Text Processing ---
-    hotword="魔搭",         # Các từ khóa ưu tiên (cách nhau bằng space)
-    hotword_weight=1.0,     # Trọng số hotword
-    disable_punc=False,     # True: Không thêm dấu câu (nhưng vẫn phải init model punc ở trên)
-    disable_itn=False,      # True: Không chuyển số (giữ nguyên "một trăm" thay vì "100")
-)
-
-# ==============================================================================
-# 3. XỬ LÝ OUTPUT VÀ TẠO SRT (LOGIC MỚI: CẮT CÂU DÀI)
+# 2. XỬ LÝ OUTPUT VÀ TẠO SRT (LOGIC MỚI: CẮT CÂU DÀI)
 # ==============================================================================
 
 def _to_srt_time(ms: int) -> str:
@@ -177,20 +224,104 @@ def generate_srt_original(result):
 
     return "\n".join(cues)
 
-# Xuất file
-out_dir = Path("outpt_srt")
-out_dir.mkdir(parents=True, exist_ok=True)
-base = Path(audio_path).stem
+def main():
+    paths = _default_model_paths()
 
-# Lưu JSON gốc để debug
-(out_dir / f"{base}.funasr.json").write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+    parser = argparse.ArgumentParser(description="Run FunASR and export SRT.")
+    parser.add_argument(
+        "--audio",
+        default=os.environ.get(
+            "AUDIO_PATH",
+            r"D:\0_code\3.Full-pipeline\fun-asr\Hệ thống muộn_fixed.16k.mono.wav",
+        ),
+        help="Path to audio file",
+    )
+    parser.add_argument("--out-dir", default="outpt_srt", help="Output directory")
+    parser.add_argument(
+        "--max-chars-per-line", type=int, default=30, help="SRT line split length"
+    )
 
-# Lưu SRT đã xử lý cắt câu
-srt_content = generate_srt_advanced(res, max_chars_per_line=30)
-(out_dir / f"{base}.funasr.srt").write_text(srt_content, encoding="utf-8")
+    parser.add_argument("--device", default=os.environ.get("DEVICE", "cuda"))
+    parser.add_argument("--ncpu", type=int, default=int(os.environ.get("NCPU", "4")))
+    parser.add_argument("--batch-size-s", type=int, default=300)
 
-# Lưu SRT gốc (giữ nguyên timestamp theo sentence_info)
-orig_srt_content = generate_srt_original(res)
-(out_dir / f"{base}.funasr.orig.srt").write_text(orig_srt_content, encoding="utf-8")
+    parser.add_argument("--hotword", default="魔搭")
+    parser.add_argument("--hotword-weight", type=float, default=1.0)
+    parser.add_argument("--disable-punc", action="store_true", default=False)
+    parser.add_argument("--disable-itn", action="store_true", default=False)
 
-print("Done! Check folder outpt_srt")
+    parser.add_argument("--model", default=os.environ.get("FUNASR_MODEL", paths["model"]))
+    parser.add_argument(
+        "--vad-model", default=os.environ.get("FUNASR_VAD_MODEL", paths["vad_model"])
+    )
+    parser.add_argument(
+        "--punc-model", default=os.environ.get("FUNASR_PUNC_MODEL", paths["punc_model"])
+    )
+
+    parser.add_argument("--max-single-segment-time", type=int, default=30000)
+    parser.add_argument("--max-end-silence-time", type=int, default=400)
+
+    parser.add_argument(
+        "--write-json",
+        action="store_true",
+        default=False,
+        help="Write .funasr.json output (debug)",
+    )
+    parser.add_argument(
+        "--write-orig-srt",
+        action="store_true",
+        default=False,
+        help="Write .funasr.orig.srt output",
+    )
+    parser.add_argument(
+        "--print-srt-path",
+        action="store_true",
+        default=False,
+        help="Print processed SRT path to stdout",
+    )
+
+    args = parser.parse_args()
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = Path(args.audio).stem
+
+    res = run_asr(
+        audio_path=args.audio,
+        device=args.device,
+        ncpu=args.ncpu,
+        batch_size_s=args.batch_size_s,
+        hotword=args.hotword,
+        hotword_weight=args.hotword_weight,
+        disable_punc=args.disable_punc,
+        disable_itn=args.disable_itn,
+        model_path=args.model,
+        vad_model_path=args.vad_model,
+        punc_model_path=args.punc_model,
+        max_single_segment_time=args.max_single_segment_time,
+        max_end_silence_time=args.max_end_silence_time,
+    )
+
+    if args.write_json:
+        (out_dir / f"{base}.funasr.json").write_text(
+            json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    srt_content = generate_srt_advanced(res, max_chars_per_line=args.max_chars_per_line)
+    srt_path = out_dir / f"{base}.funasr.srt"
+    srt_path.write_text(srt_content, encoding="utf-8")
+
+    if args.write_orig_srt:
+        orig_srt_content = generate_srt_original(res)
+        (out_dir / f"{base}.funasr.orig.srt").write_text(
+            orig_srt_content, encoding="utf-8"
+        )
+
+    if args.print_srt_path:
+        print(str(srt_path))
+    else:
+        print("Done!")
+
+
+if __name__ == "__main__":
+    main()
