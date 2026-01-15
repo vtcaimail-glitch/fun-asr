@@ -30,7 +30,7 @@ model = AutoModel(
 # ==============================================================================
 # 2. CHẠY NHẬN DIỆN (FULL PARAMETERS)
 # ==============================================================================
-audio_path = r"D:\0_code\3.Full-pipeline\fun-asr\Hệ thống muộn_fixed.16k.mono.wav"
+audio_path = r"D:\0_code\3.Full-pipeline\fun-asr\Tập 1.flac"
 
 res = model.generate(
     input=audio_path,
@@ -154,6 +154,29 @@ def generate_srt_advanced(result, max_chars_per_line=40):
                  
     return "\n".join(cues)
 
+def generate_srt_original(result):
+    """
+    Xuất SRT "gốc": mỗi sentence 1 cue, giữ nguyên start/end từ FunASR
+    (không cắt câu, không chỉnh timestamp).
+    """
+    cues = []
+    index = 1
+
+    items = result if isinstance(result, list) else [result]
+    for item in items:
+        if "sentence_info" not in item:
+            continue
+        for sentence in item["sentence_info"]:
+            text = sentence.get("text", "")
+            start = sentence.get("start", 0)
+            end = sentence.get("end", 0)
+            cues.append(
+                f"{index}\n{_to_srt_time(start)} --> {_to_srt_time(end)}\n{text}\n"
+            )
+            index += 1
+
+    return "\n".join(cues)
+
 # Xuất file
 out_dir = Path("outpt_srt")
 out_dir.mkdir(parents=True, exist_ok=True)
@@ -166,4 +189,8 @@ base = Path(audio_path).stem
 srt_content = generate_srt_advanced(res, max_chars_per_line=30)
 (out_dir / f"{base}.funasr.srt").write_text(srt_content, encoding="utf-8")
 
-print("Done! Check folder output_srt")
+# Lưu SRT gốc (giữ nguyên timestamp theo sentence_info)
+orig_srt_content = generate_srt_original(res)
+(out_dir / f"{base}.funasr.orig.srt").write_text(orig_srt_content, encoding="utf-8")
+
+print("Done! Check folder outpt_srt")
