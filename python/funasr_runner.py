@@ -142,21 +142,157 @@ def _to_srt_time(ms: int) -> str:
 
 
 def generate_srt_original(result):
-    cues = []
-    index = 1
+    cues = _build_sentence_cues(result)
+    cues = _merge_cues_for_srt(cues, max_words=_get_merge_max_words())
+    return _render_srt(cues)
 
+
+def _get_merge_max_words() -> int:
+    raw = os.environ.get("SRT_MERGE_MAX_WORDS", "").strip()
+    try:
+        value = int(raw)
+        if value <= 0:
+            return 15
+        return value
+    except Exception:
+        return 15
+
+
+def _build_sentence_cues(result):
+    cues = []
     items = result if isinstance(result, list) else [result]
     for item in items:
         if "sentence_info" not in item:
             continue
         for sentence in item["sentence_info"]:
-            text = sentence.get("text", "")
-            start = sentence.get("start", 0)
-            end = sentence.get("end", 0)
-            cues.append(f"{index}\n{_to_srt_time(start)} --> {_to_srt_time(end)}\n{text}\n")
-            index += 1
+            cues.append(
+                {
+                    "start": int(sentence.get("start", 0)),
+                    "end": int(sentence.get("end", 0)),
+                    "text": str(sentence.get("text", "")),
+                }
+            )
+    return cues
 
-    return "\n".join(cues)
+
+def _render_srt(cues) -> str:
+    lines = []
+    index = 1
+    for cue in cues:
+        lines.append(str(index))
+        lines.append(f"{_to_srt_time(cue['start'])} --> {_to_srt_time(cue['end'])}")
+        lines.append(cue["text"])
+        lines.append("")
+        index += 1
+    return "\n".join(lines).rstrip() + "\n"
+
+
+_NON_FINAL_JOIN_PUNCT = {",", "，", "、"}
+_FINAL_PUNCT = {".", "!", "?", "。", "！", "？"}
+
+
+def _strip_trailing_join_punct(text: str) -> str:
+    if not text:
+        return text
+    last = text[-1]
+    if last in _NON_FINAL_JOIN_PUNCT:
+        return text[:-1]
+    return text
+
+
+def _needs_space_between(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a[-1].isspace() or b[0].isspace():
+        return False
+    # Only add a space for Latin/digit boundaries (avoid messing with CJK).
+    return a[-1].isascii() and b[0].isascii() and a[-1].isalnum() and b[0].isalnum()
+
+
+def _count_words_mixed(text: str) -> int:
+    """
+    - CJK (Han/Hiragana/Katakana/Hangul): đếm theo ký tự (bỏ whitespace/punct).
+    - Latin: đếm theo token whitespace (bỏ token chỉ có dấu).
+    """
+    cjk = 0
+    latin_buf = []
+
+    for ch in text:
+        if ch.isspace():
+            latin_buf.append(" ")
+            continue
+
+        code = ord(ch)
+        is_cjk = (
+            (0x4E00 <= code <= 0x9FFF)  # CJK Unified Ideographs
+            or (0x3400 <= code <= 0x4DBF)  # CJK Extension A
+            or (0x3040 <= code <= 0x309F)  # Hiragana
+            or (0x30A0 <= code <= 0x30FF)  # Katakana
+            or (0xAC00 <= code <= 0xD7AF)  # Hangul Syllables
+        )
+        if is_cjk:
+            cjk += 1
+            latin_buf.append(" ")
+            continue
+
+        latin_buf.append(ch)
+
+    latin_tokens = 0
+    for tok in "".join(latin_buf).split():
+        # Count if token contains at least one letter/digit.
+        if any(ch.isalnum() for ch in tok):
+            latin_tokens += 1
+
+    return cjk + latin_tokens
+
+
+def _merge_cues_for_srt(cues, *, max_words: int):
+    """
+    Rule:
+    - Merge only when cue[i].text ends with comma-like (,_，、) AND NOT sentence-ending (.?! 。！？)
+    - Only merge when next.start == current.end (gap exactly 0ms).
+    - When merging, remove the join punctuation at the boundary (e.g. "A," + "B," => "AB,").
+    - Do not merge if merged text would exceed max_words (mixed counting).
+    """
+    if not cues:
+        return cues
+
+    out = []
+    i = 0
+    while i < len(cues):
+        cur = dict(cues[i])
+        while i + 1 < len(cues):
+            nxt = cues[i + 1]
+
+            if int(cur["end"]) != int(nxt["start"]):
+                break
+
+            cur_text = str(cur.get("text", ""))
+            if not cur_text:
+                break
+
+            last = cur_text[-1]
+            if last in _FINAL_PUNCT:
+                break
+            if last not in _NON_FINAL_JOIN_PUNCT:
+                break
+
+            left = _strip_trailing_join_punct(cur_text)
+            right = str(nxt.get("text", ""))
+            join = " " if _needs_space_between(left, right) else ""
+            merged_text = f"{left}{join}{right}"
+
+            if _count_words_mixed(merged_text) > max_words:
+                break
+
+            cur["text"] = merged_text
+            cur["end"] = int(nxt.get("end", cur["end"]))
+            i += 1
+
+        out.append(cur)
+        i += 1
+
+    return out
 
 
 def main():
@@ -269,7 +405,7 @@ def main():
     srt_path.write_text(srt_content, encoding="utf-8")
 
     if args.write_orig_srt:
-        orig_srt_content = generate_srt_original(res)
+        orig_srt_content = _render_srt(_build_sentence_cues(res))
         (out_dir / f"{base}.funasr.orig.srt").write_text(orig_srt_content, encoding="utf-8")
 
     if args.print_srt_path:
