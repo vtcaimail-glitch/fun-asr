@@ -321,7 +321,7 @@ def main():
     parser.add_argument("--out-dir", default="outpt_srt", help="Output directory")
 
     parser.add_argument("--device", default=os.environ.get("DEVICE", "cuda"))
-    parser.add_argument("--ncpu", type=int, default=int(os.environ.get("NCPU", "4")))
+    parser.add_argument("--ncpu", type=int, default=int(os.environ.get("NCPU", "8")))
     parser.add_argument("--batch-size-s", type=int, default=1800)
 
     parser.add_argument("--hotword", default="")
