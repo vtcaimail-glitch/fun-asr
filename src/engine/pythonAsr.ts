@@ -6,25 +6,27 @@ import { config } from "../config";
 type RunPythonArgs = {
   audioPath: string;
   outDir: string;
-  maxCharsPerLine: number;
-  timeoutMs: number;
 };
 
 function resolvePythonBin(): string {
-  if (config.pythonBin) return config.pythonBin;
-
-  const candidates = [
-    path.join(process.cwd(), ".venv", "Scripts", "python.exe"),
-    path.join(process.cwd(), ".venv", "bin", "python3"),
-    path.join(process.cwd(), ".venv", "bin", "python"),
-    "python3",
-    "python",
-  ];
-  for (const candidate of candidates) {
-    if (candidate === "python3" || candidate === "python") return candidate;
-    if (fs.existsSync(candidate)) return candidate;
+  if (config.pythonBin) {
+    const looksLikePath = config.pythonBin.includes("/") || config.pythonBin.includes("\\");
+    if (looksLikePath && !fs.existsSync(config.pythonBin)) {
+      throw new Error(`PYTHON_BIN points to a missing file: ${config.pythonBin}`);
+    }
+    return config.pythonBin;
   }
-  return "python3";
+
+  const venvPython =
+    process.platform === "win32"
+      ? path.join(process.cwd(), ".venv", "Scripts", "python.exe")
+      : path.join(process.cwd(), ".venv", "bin", "python");
+
+  if (fs.existsSync(venvPython)) return venvPython;
+
+  throw new Error(
+    `Python .venv not found. Expected ${venvPython}. Create it or set PYTHON_BIN to the venv python executable.`
+  );
 }
 
 export async function runAsrViaPython(args: RunPythonArgs): Promise<{ srtPath: string }> {
@@ -38,15 +40,7 @@ export async function runAsrViaPython(args: RunPythonArgs): Promise<{ srtPath: s
 
   const child = spawn(
     pythonBin,
-    [
-      checkPy,
-      "--audio",
-      args.audioPath,
-      "--out-dir",
-      args.outDir,
-      "--max-chars-per-line",
-      String(args.maxCharsPerLine),
-    ],
+    [checkPy, "--audio", args.audioPath, "--out-dir", args.outDir],
     { stdio: ["ignore", "pipe", "pipe"] }
   );
 
@@ -56,17 +50,10 @@ export async function runAsrViaPython(args: RunPythonArgs): Promise<{ srtPath: s
   child.stderr.on("data", (d) => (stderr += String(d)));
 
   const exitCode = await new Promise<number>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`ASR timeout after ${args.timeoutMs}ms`));
-    }, args.timeoutMs);
-
     child.on("error", (err) => {
-      clearTimeout(timer);
       reject(err);
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
       resolve(code ?? 1);
     });
   });

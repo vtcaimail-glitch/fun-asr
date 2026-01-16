@@ -17,7 +17,7 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "2mb" }));
 app.use(requestIdMiddleware);
 
-const queue = new SerialQueue(config.queueMaxSize);
+const queue = new SerialQueue();
 
 const uploadDir = path.join(config.tmpDir, "uploads");
 const outDirRoot = path.join(config.tmpDir, "out");
@@ -35,7 +35,6 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: config.maxUploadBytes },
 });
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
@@ -54,7 +53,7 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
     if (!audioPath && audioUrl) {
       const safe = audioUrl.replaceAll(/[^\w.-]/g, "_");
       tempAudioPath = path.join(uploadDir, `${requestId}__${Date.now()}__url__${safe}`);
-      const { bytes } = await downloadToFile(audioUrl, tempAudioPath, config.maxUploadBytes);
+      const { bytes } = await downloadToFile(audioUrl, tempAudioPath);
       console.log(`[${requestId}] downloaded bytes=${bytes} url=${audioUrl}`);
       audioPath = tempAudioPath;
     }
@@ -90,8 +89,6 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
           ({ srtPath } = await runAsrViaPython({
             audioPath,
             outDir: perRequestOutDir,
-            maxCharsPerLine: config.maxCharsPerLine,
-            timeoutMs: config.asrTimeoutMs,
           }));
         } catch (err) {
           const details = (err as unknown as { details?: unknown }).details;
@@ -113,13 +110,7 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
     };
 
     let srt: string;
-    try {
-      srt = await queue.add(job);
-    } catch (err) {
-      const code = (err as unknown as { code?: string }).code;
-      if (code === "QUEUE_FULL") throw new HttpError(503, "overloaded", "Queue is full");
-      throw err;
-    }
+    srt = await queue.add(job);
 
     if (responseFormat === "srt") {
       res.setHeader("content-type", "text/plain; charset=utf-8");
