@@ -3,6 +3,10 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
+import threading
+import traceback
+from typing import Optional
 
 
 # ==============================================================================
@@ -43,6 +47,22 @@ def _default_model_paths():
             repo_root / "models/iic/punc_ct-transformer_cn-en-common-vocab471067-large"
         ),
     }
+
+
+def _resolve_ref_path(path_str: str, *, repo_root: Path, models_dir: Path) -> str:
+    """
+    Cho phép truyền path tương đối (tham chiếu theo repo root hoặc theo models dir).
+    - Absolute path: giữ nguyên.
+    - Relative path: thử lần lượt `models_dir/<path>`, rồi `repo_root/<path>`.
+    """
+    p = Path(path_str)
+    if p.is_absolute():
+        return str(p)
+    cand1 = models_dir / p
+    if cand1.exists():
+        return str(cand1)
+    cand2 = repo_root / p
+    return str(cand2)
 
 
 def build_model(
@@ -140,9 +160,23 @@ def generate_srt_original(result):
 
 
 def main():
+    repo_root = _find_repo_root(Path(__file__).resolve().parent)
+    models_dir = Path(os.environ.get("FUNASR_MODELS_DIR", str(repo_root / "models")))
     paths = _default_model_paths()
 
     parser = argparse.ArgumentParser(description="Run FunASR and export SRT.")
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        default=False,
+        help="Run as a persistent stdin/stdout JSONL worker (preload model once).",
+    )
+    parser.add_argument(
+        "--idle-seconds",
+        type=int,
+        default=300,
+        help="Worker auto-exit after N seconds idle (only in --worker mode).",
+    )
     parser.add_argument(
         "--audio",
         default=os.environ.get("AUDIO_PATH", ""),
@@ -152,7 +186,7 @@ def main():
 
     parser.add_argument("--device", default=os.environ.get("DEVICE", "cuda"))
     parser.add_argument("--ncpu", type=int, default=int(os.environ.get("NCPU", "4")))
-    parser.add_argument("--batch-size-s", type=int, default=600)
+    parser.add_argument("--batch-size-s", type=int, default=1800)
 
     parser.add_argument("--hotword", default="")
     parser.add_argument("--hotword-weight", type=float, default=1.0)
@@ -188,6 +222,20 @@ def main():
     )
 
     args = parser.parse_args()
+
+    model_path = _resolve_ref_path(args.model, repo_root=repo_root, models_dir=models_dir)
+    vad_model_path = _resolve_ref_path(args.vad_model, repo_root=repo_root, models_dir=models_dir)
+    punc_model_path = _resolve_ref_path(args.punc_model, repo_root=repo_root, models_dir=models_dir)
+
+    if args.worker:
+        _run_worker(
+            args,
+            model_path=model_path,
+            vad_model_path=vad_model_path,
+            punc_model_path=punc_model_path,
+        )
+        return
+
     if not args.audio:
         raise SystemExit("Missing --audio (or set AUDIO_PATH)")
 
@@ -204,9 +252,9 @@ def main():
         hotword_weight=args.hotword_weight,
         disable_punc=args.disable_punc,
         disable_itn=args.disable_itn,
-        model_path=args.model,
-        vad_model_path=args.vad_model,
-        punc_model_path=args.punc_model,
+        model_path=model_path,
+        vad_model_path=vad_model_path,
+        punc_model_path=punc_model_path,
         max_single_segment_time=args.max_single_segment_time,
         max_end_silence_time=args.max_end_silence_time,
     )
@@ -228,6 +276,120 @@ def main():
         print(str(srt_path))
     else:
         print("Done!")
+
+
+class _IdleExit:
+    def __init__(self, idle_seconds: int):
+        self._idle_seconds = max(1, int(idle_seconds))
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+
+    def start(self) -> None:
+        self.touch()
+
+    def touch(self) -> None:
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+            self._timer = threading.Timer(self._idle_seconds, self._exit_now)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+
+    @staticmethod
+    def _exit_now() -> None:
+        os._exit(0)
+
+
+def _jsonl_write(obj) -> None:
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _run_worker(args, *, model_path: str, vad_model_path: str, punc_model_path: str) -> None:
+    idle = _IdleExit(args.idle_seconds)
+    idle.start()
+
+    model = build_model(
+        model_path=model_path,
+        vad_model_path=vad_model_path,
+        punc_model_path=punc_model_path,
+        device=args.device,
+        ncpu=args.ncpu,
+        max_single_segment_time=args.max_single_segment_time,
+        max_end_silence_time=args.max_end_silence_time,
+    )
+
+    _jsonl_write(
+        {
+            "type": "ready",
+            "pid": os.getpid(),
+            "device": args.device,
+            "ncpu": args.ncpu,
+            "idleSeconds": args.idle_seconds,
+        }
+    )
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            # We are about to do work; do not allow idle shutdown mid-job.
+            idle.stop()
+
+            req = json.loads(line)
+            req_id = req.get("id")
+            if req.get("type") == "shutdown":
+                _jsonl_write({"type": "shutdown", "id": req_id, "ok": True})
+                return
+
+            audio_path = str(req["audioPath"])
+            out_dir = str(req["outDir"])
+
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            base = Path(audio_path).stem
+            srt_path = str(Path(out_dir) / f"{base}.funasr.srt")
+
+            res = model.generate(
+                input=audio_path,
+                batch_size_s=args.batch_size_s,
+                sentence_timestamp=True,
+                return_raw_text=False,
+                hotword=args.hotword,
+                hotword_weight=args.hotword_weight,
+                disable_punc=args.disable_punc,
+                disable_itn=args.disable_itn,
+            )
+
+            if req.get("writeJson"):
+                Path(out_dir, f"{base}.funasr.json").write_text(
+                    json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+
+            srt_content = generate_srt_original(res)
+            Path(srt_path).write_text(srt_content, encoding="utf-8")
+
+            _jsonl_write({"type": "result", "id": req_id, "ok": True, "srtPath": srt_path})
+        except Exception as e:
+            _jsonl_write(
+                {
+                    "type": "result",
+                    "id": req.get("id") if isinstance(req, dict) else None,
+                    "ok": False,
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+        finally:
+            # Restart idle countdown only when we're idle again.
+            idle.touch()
 
 
 if __name__ == "__main__":

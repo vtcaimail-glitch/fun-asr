@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { config } from "../config";
+import { PythonAsrWorker } from "./pythonWorker";
 
 type RunPythonArgs = {
   audioPath: string;
@@ -29,41 +29,44 @@ function resolvePythonBin(): string {
   );
 }
 
+let worker: PythonAsrWorker | undefined;
+
 export async function runAsrViaPython(args: RunPythonArgs): Promise<{ srtPath: string }> {
   const pythonBin = resolvePythonBin();
-  const checkPy = config.checkPy;
-
-  const base = path.parse(args.audioPath).name;
-  const srtPath = path.join(args.outDir, `${base}.funasr.srt`);
+  const runner = config.checkPy;
 
   await fs.promises.mkdir(args.outDir, { recursive: true });
 
-  const child = spawn(
-    pythonBin,
-    [checkPy, "--audio", args.audioPath, "--out-dir", args.outDir],
-    { stdio: ["ignore", "pipe", "pipe"] }
-  );
-
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (d) => (stdout += String(d)));
-  child.stderr.on("data", (d) => (stderr += String(d)));
-
-  const exitCode = await new Promise<number>((resolve, reject) => {
-    child.on("error", (err) => {
-      reject(err);
+  const idleSeconds = 5 * 60;
+  const makeWorker = () =>
+    new PythonAsrWorker(pythonBin, runner, idleSeconds, (ev) => {
+      const ts2 = new Date().toISOString();
+      if (ev.type === "spawn") console.log(`[${ts2}] [python-worker] spawn pid=${ev.pid ?? "?"}`);
+      if (ev.type === "ready")
+        console.log(
+          `[${ts2}] [python-worker] ready pid=${ev.pid} device=${ev.device ?? "?"} ncpu=${ev.ncpu ?? "?"} idleSeconds=${
+            ev.idleSeconds ?? "?"
+          }`
+        );
+      if (ev.type === "stderr") console.log(`[${ts2}] [python-worker] stderr pid=${ev.pid ?? "?"} ${ev.line}`);
+      if (ev.type === "exit")
+        console.log(
+          `[${ts2}] [python-worker] exit code=${ev.code ?? "null"} signal=${ev.signal ?? "null"}`
+        );
     });
-    child.on("close", (code) => {
-      resolve(code ?? 1);
-    });
-  });
-
-  if (exitCode !== 0) {
-    const error = new Error("Python ASR failed");
-    (error as unknown as { code: string }).code = "PY_ASR_FAILED";
-    (error as unknown as { details: unknown }).details = { exitCode, stdout, stderr };
-    throw error;
+  if (!worker) {
+    const ts = new Date().toISOString();
+    console.log(`[${ts}] [python-worker] init pythonBin=${pythonBin} runner=${runner} idleSeconds=${idleSeconds}`);
+    worker = makeWorker();
   }
 
-  return { srtPath };
+  try {
+    return await worker.requestAsr({ audioPath: args.audioPath, outDir: args.outDir });
+  } catch (err) {
+    // Best-effort: if the worker died while handling the request, respawn once.
+    const ts = new Date().toISOString();
+    console.log(`[${ts}] [python-worker] respawn after error=${(err as Error)?.message ?? String(err)}`);
+    worker = makeWorker();
+    return await worker.requestAsr({ audioPath: args.audioPath, outDir: args.outDir });
+  }
 }

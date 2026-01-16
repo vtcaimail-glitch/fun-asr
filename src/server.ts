@@ -19,6 +19,12 @@ app.use(requestIdMiddleware);
 
 const queue = new SerialQueue();
 
+function logLine(prefix: string, msg: string, extra?: Record<string, unknown>) {
+  const ts = new Date().toISOString();
+  const tail = extra ? ` ${JSON.stringify(extra)}` : "";
+  console.log(`[${ts}] ${prefix} ${msg}${tail}`);
+}
+
 const uploadDir = path.join(config.tmpDir, "uploads");
 const outDirRoot = path.join(config.tmpDir, "out");
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -42,6 +48,7 @@ app.get("/health", (_req, res) => res.json({ status: "ok" }));
 app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) => {
   try {
     const requestId = getRequestId(req);
+    const tRequest = Date.now();
     const responseFormat = String(req.query?.format ?? "").toLowerCase(); // "json" | "srt"
 
     const jsonAudioPath = (req.body?.audioPath as unknown as string | undefined)?.trim();
@@ -50,11 +57,12 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
 
     let tempAudioPath: string | undefined = uploadedFilePath;
     let audioPath: string | undefined = uploadedFilePath ?? jsonAudioPath;
+    const source = uploadedFilePath ? "upload" : jsonAudioPath ? "audioPath" : audioUrl ? "audioUrl" : "unknown";
     if (!audioPath && audioUrl) {
       const safe = audioUrl.replaceAll(/[^\w.-]/g, "_");
       tempAudioPath = path.join(uploadDir, `${requestId}__${Date.now()}__url__${safe}`);
       const { bytes } = await downloadToFile(audioUrl, tempAudioPath);
-      console.log(`[${requestId}] downloaded bytes=${bytes} url=${audioUrl}`);
+      logLine(`[${requestId}]`, "downloaded", { bytes, url: audioUrl });
       audioPath = tempAudioPath;
     }
     if (!audioPath) {
@@ -73,23 +81,42 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
         "Video container input is not supported here; convert to WAV/FLAC (16kHz mono) and retry."
       );
     }
+    if (ext && ext !== ".wav") {
+      throw new HttpError(400, "unsupported_media", "Only .wav input is accepted.");
+    }
 
     if (uploadedFilePath && req.file?.size) {
-      console.log(`[${requestId}] upload bytes=${req.file.size} pending=${queue.pending} running=${queue.running}`);
+      logLine(`[${requestId}]`, "received", {
+        source,
+        bytes: req.file.size,
+        pending: queue.pending,
+        running: queue.running,
+        format: responseFormat || "json",
+      });
     } else {
-      console.log(`[${requestId}] audioPath=${audioPath} pending=${queue.pending} running=${queue.running}`);
+      logLine(`[${requestId}]`, "received", {
+        source,
+        audioPath,
+        pending: queue.pending,
+        running: queue.running,
+        format: responseFormat || "json",
+      });
     }
 
     const perRequestOutDir = path.join(outDirRoot, requestId);
+    const tEnqueue = Date.now();
     const job = async () => {
       try {
-        console.log(`[${requestId}] start`);
+        const tStart = Date.now();
+        logLine(`[${requestId}]`, "start", { waitMs: tStart - tEnqueue, pending: queue.pending, running: queue.running });
         let srtPath: string;
         try {
+          const tAsr = Date.now();
           ({ srtPath } = await runAsrViaPython({
             audioPath,
             outDir: perRequestOutDir,
           }));
+          logLine(`[${requestId}]`, "engine_done", { engineMs: Date.now() - tAsr });
         } catch (err) {
           const details = (err as unknown as { details?: unknown }).details;
           const code = (err as unknown as { code?: string }).code;
@@ -101,7 +128,10 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
           );
         }
         const srt = await fs.promises.readFile(srtPath, "utf-8");
-        console.log(`[${requestId}] done srtBytes=${Buffer.byteLength(srt, "utf-8")}`);
+        logLine(`[${requestId}]`, "done", {
+          srtBytes: Buffer.byteLength(srt, "utf-8"),
+          totalMs: Date.now() - tRequest,
+        });
         return srt;
       } finally {
         await fs.promises.rm(perRequestOutDir, { recursive: true, force: true });
@@ -119,6 +149,7 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
       return res.status(200).send(Buffer.from(`\ufeff${srt}`, "utf8"));
     }
 
+    res.setHeader("x-request-id", requestId);
     res.json({ status: "ok", data: { srt } });
   } catch (err) {
     next(err);
