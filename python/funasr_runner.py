@@ -142,9 +142,24 @@ def _to_srt_time(ms: int) -> str:
 
 
 def generate_srt_original(result):
+    return _render_srt(_build_sentence_cues(result))
+
+
+def generate_srt_merged(result):
     cues = _build_sentence_cues(result)
     cues = _merge_cues_for_srt(cues, max_words=_get_merge_max_words())
     return _render_srt(cues)
+
+
+def _is_merge_enabled() -> bool:
+    raw = os.environ.get("SRT_MERGE_ENABLED", "").strip().lower()
+    if not raw:
+        return False
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def generate_srt_output(result):
+    return generate_srt_merged(result) if _is_merge_enabled() else generate_srt_original(result)
 
 
 def _get_merge_max_words() -> int:
@@ -400,7 +415,7 @@ def main():
             json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    srt_content = generate_srt_original(res)
+    srt_content = generate_srt_output(res)
     srt_path = out_dir / f"{base}.funasr.srt"
     srt_path.write_text(srt_content, encoding="utf-8")
 
@@ -509,7 +524,7 @@ def _run_worker(args, *, model_path: str, vad_model_path: str, punc_model_path: 
                     json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
 
-            srt_content = generate_srt_original(res)
+            srt_content = generate_srt_output(res)
             Path(srt_path).write_text(srt_content, encoding="utf-8")
 
             _jsonl_write({"type": "result", "id": req_id, "ok": True, "srtPath": srt_path})
