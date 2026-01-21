@@ -6,6 +6,7 @@ type Config = {
   bearerToken: string;
   requireAuth: boolean;
   pythonBin: string;
+  ffmpegBin: string;
   checkPy: string;
   tmpDir: string;
 };
@@ -29,6 +30,7 @@ export const config: Config = {
   bearerToken: process.env.BEARER_TOKEN ?? "",
   requireAuth: readBool("REQUIRE_AUTH", true),
   pythonBin: process.env.PYTHON_BIN ?? "",
+  ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
   checkPy: process.env.CHECK_PY ?? path.join(process.cwd(), "python", "funasr_runner.py"),
   tmpDir: process.env.TMP_DIR ?? path.join(process.cwd(), "tmp"),
 };

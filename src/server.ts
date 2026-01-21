@@ -9,6 +9,7 @@ import { getRequestId, requestIdMiddleware } from "./http/requestId";
 import { SerialQueue } from "./queue/serialQueue";
 import { runAsrViaPython } from "./engine/pythonAsr";
 import { downloadToFile } from "./http/download";
+import { convertToWavMono16k } from "./audio/ffmpeg";
 
 validateConfig();
 
@@ -90,18 +91,6 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
       );
     }
 
-    const ext = path.extname(audioPath).toLowerCase();
-    if ([".mp4", ".mkv", ".mov", ".avi", ".webm"].includes(ext)) {
-      throw new HttpError(
-        400,
-        "unsupported_media",
-        "Video container input is not supported here; convert to WAV/FLAC (16kHz mono) and retry."
-      );
-    }
-    if (ext && ext !== ".wav") {
-      throw new HttpError(400, "unsupported_media", "Only .wav input is accepted.");
-    }
-
     if (uploadedFilePath && req.file?.size) {
       logLine(`[${requestId}]`, "received", {
         source,
@@ -126,11 +115,25 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
       try {
         const tStart = Date.now();
         logLine(`[${requestId}]`, "start", { waitMs: tStart - tEnqueue, pending: queue.pending, running: queue.running });
+        await fs.promises.mkdir(perRequestOutDir, { recursive: true });
+        const asrWavPath = path.join(perRequestOutDir, "asr.wav");
+        try {
+          const tConvert = Date.now();
+          await convertToWavMono16k({
+            ffmpegBin: config.ffmpegBin,
+            inputPath: audioPath,
+            outputWavPath: asrWavPath,
+          });
+          logLine(`[${requestId}]`, "audio_converted", { convertMs: Date.now() - tConvert });
+        } catch (err) {
+          const details = (err as Error)?.message ?? String(err);
+          throw new HttpError(400, "bad_audio", "Failed to convert input audio to wav mono 16k", { details });
+        }
         let srtPath: string;
         try {
           const tAsr = Date.now();
           ({ srtPath } = await runAsrViaPython({
-            audioPath,
+            audioPath: asrWavPath,
             outDir: perRequestOutDir,
             vadMaxSingleSegmentMs,
             vadMaxEndSilenceMs,

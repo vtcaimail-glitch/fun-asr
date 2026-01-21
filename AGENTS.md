@@ -1,0 +1,1 @@
+Cấm chạy các lệnh npm như build, dev, hoặc lint check lỗi
