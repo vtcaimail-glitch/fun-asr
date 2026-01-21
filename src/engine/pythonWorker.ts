@@ -35,13 +35,26 @@ export class PythonAsrWorker {
     private readonly onEvent?: (ev: PythonWorkerEvent) => void
   ) {}
 
-  async requestAsr(args: { audioPath: string; outDir: string }): Promise<{ srtPath: string }> {
+  async requestAsr(args: {
+    audioPath: string;
+    outDir: string;
+    vadMaxSingleSegmentMs?: number;
+    vadMaxEndSilenceMs?: number;
+  }): Promise<{ srtPath: string }> {
     await this.ensureStarted();
     const child = this.child;
     if (!child) throw new Error("Python worker not running");
 
     const id = this.nextId++;
-    const payload = JSON.stringify({ type: "asr", id, audioPath: args.audioPath, outDir: args.outDir }) + "\n";
+    const payload =
+      JSON.stringify({
+        type: "asr",
+        id,
+        audioPath: args.audioPath,
+        outDir: args.outDir,
+        vadMaxSingleSegmentMs: args.vadMaxSingleSegmentMs,
+        vadMaxEndSilenceMs: args.vadMaxEndSilenceMs,
+      }) + "\n";
 
     const resultPromise = new Promise<{ srtPath: string }>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

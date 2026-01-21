@@ -158,6 +158,13 @@ def _is_merge_enabled() -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
+def _is_strip_middle_punct_enabled() -> bool:
+    raw = os.environ.get("SRT_MERGE_STRIP_MIDDLE_PUNCT", "").strip().lower()
+    if not raw:
+        return True
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
 def generate_srt_output(result):
     return generate_srt_merged(result) if _is_merge_enabled() else generate_srt_original(result)
 
@@ -208,6 +215,8 @@ _FINAL_PUNCT = {".", "!", "?", "。", "！", "？"}
 
 def _strip_trailing_join_punct(text: str) -> str:
     if not text:
+        return text
+    if not _is_strip_middle_punct_enabled():
         return text
     last = text[-1]
     if last in _NON_FINAL_JOIN_PUNCT:
@@ -503,6 +512,8 @@ def _run_worker(args, *, model_path: str, vad_model_path: str, punc_model_path: 
 
             audio_path = str(req["audioPath"])
             out_dir = str(req["outDir"])
+            vad_max_single_segment_ms = int(req.get("vadMaxSingleSegmentMs") or args.max_single_segment_time)
+            vad_max_end_silence_ms = int(req.get("vadMaxEndSilenceMs") or args.max_end_silence_time)
 
             Path(out_dir).mkdir(parents=True, exist_ok=True)
             base = Path(audio_path).stem
@@ -517,6 +528,8 @@ def _run_worker(args, *, model_path: str, vad_model_path: str, punc_model_path: 
                 hotword_weight=args.hotword_weight,
                 disable_punc=args.disable_punc,
                 disable_itn=args.disable_itn,
+                max_single_segment_time=vad_max_single_segment_ms,
+                max_end_silence_time=vad_max_end_silence_ms,
             )
 
             if req.get("writeJson"):

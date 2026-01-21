@@ -6,6 +6,8 @@ import { PythonAsrWorker } from "./pythonWorker";
 type RunPythonArgs = {
   audioPath: string;
   outDir: string;
+  vadMaxSingleSegmentMs?: number;
+  vadMaxEndSilenceMs?: number;
 };
 
 function resolvePythonBin(): string {
@@ -61,12 +63,22 @@ export async function runAsrViaPython(args: RunPythonArgs): Promise<{ srtPath: s
   }
 
   try {
-    return await worker.requestAsr({ audioPath: args.audioPath, outDir: args.outDir });
+    return await worker.requestAsr({
+      audioPath: args.audioPath,
+      outDir: args.outDir,
+      vadMaxSingleSegmentMs: args.vadMaxSingleSegmentMs,
+      vadMaxEndSilenceMs: args.vadMaxEndSilenceMs,
+    });
   } catch (err) {
     // Best-effort: if the worker died while handling the request, respawn once.
     const ts = new Date().toISOString();
     console.log(`[${ts}] [python-worker] respawn after error=${(err as Error)?.message ?? String(err)}`);
     worker = makeWorker();
-    return await worker.requestAsr({ audioPath: args.audioPath, outDir: args.outDir });
+    return await worker.requestAsr({
+      audioPath: args.audioPath,
+      outDir: args.outDir,
+      vadMaxSingleSegmentMs: args.vadMaxSingleSegmentMs,
+      vadMaxEndSilenceMs: args.vadMaxEndSilenceMs,
+    });
   }
 }

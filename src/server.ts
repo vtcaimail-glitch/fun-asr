@@ -51,6 +51,23 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
     const tRequest = Date.now();
     const responseFormat = String(req.query?.format ?? "").toLowerCase(); // "json" | "srt"
 
+    const vadMaxSingleSegmentMsRaw = String(req.query?.vadMaxSingleSegmentMs ?? "").trim();
+    const vadMaxEndSilenceMsRaw = String(req.query?.vadMaxEndSilenceMs ?? "").trim();
+    const vadMaxSingleSegmentMs = vadMaxSingleSegmentMsRaw
+      ? Number.parseInt(vadMaxSingleSegmentMsRaw, 10)
+      : undefined;
+    const vadMaxEndSilenceMs = vadMaxEndSilenceMsRaw ? Number.parseInt(vadMaxEndSilenceMsRaw, 10) : undefined;
+    if (
+      (vadMaxSingleSegmentMs !== undefined && (!Number.isFinite(vadMaxSingleSegmentMs) || vadMaxSingleSegmentMs <= 0)) ||
+      (vadMaxEndSilenceMs !== undefined && (!Number.isFinite(vadMaxEndSilenceMs) || vadMaxEndSilenceMs <= 0))
+    ) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "Invalid VAD params. Use positive integers: vadMaxSingleSegmentMs, vadMaxEndSilenceMs."
+      );
+    }
+
     const jsonAudioPath = (req.body?.audioPath as unknown as string | undefined)?.trim();
     const audioUrl = (req.body?.audioUrl as unknown as string | undefined)?.trim();
     const uploadedFilePath = req.file?.path;
@@ -115,6 +132,8 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
           ({ srtPath } = await runAsrViaPython({
             audioPath,
             outDir: perRequestOutDir,
+            vadMaxSingleSegmentMs,
+            vadMaxEndSilenceMs,
           }));
           logLine(`[${requestId}]`, "engine_done", { engineMs: Date.now() - tAsr });
         } catch (err) {
