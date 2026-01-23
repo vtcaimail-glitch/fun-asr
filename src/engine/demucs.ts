@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { config } from "../config";
 import { resolvePythonBin } from "./pythonBin";
 
 type DemucsResult = {
@@ -10,8 +11,6 @@ type DemucsResult = {
 
 const DEFAULT_DEMUCS_MODEL = "htdemucs_ft";
 const DEFAULT_DEMUCS_TWO_STEMS = "vocals";
-const DEFAULT_DEMUCS_MP3_BITRATE = 128;
-const DEFAULT_DEMUCS_JOBS = 2;
 
 async function walkFiles(root: string): Promise<string[]> {
   const out: string[] = [];
@@ -63,9 +62,9 @@ export async function runDemucs(args: { audioPath: string; outDir: string }): Pr
     args.outDir,
     "--mp3",
     "--mp3-bitrate",
-    String(DEFAULT_DEMUCS_MP3_BITRATE),
+    String(config.demucsMp3Bitrate),
     "-j",
-    String(DEFAULT_DEMUCS_JOBS),
+    String(config.demucsJobs),
   ];
 
   await new Promise<void>((resolve, reject) => {

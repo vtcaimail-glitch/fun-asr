@@ -9,6 +9,8 @@ type Config = {
   ffmpegBin: string;
   checkPy: string;
   tmpDir: string;
+  demucsMp3Bitrate: number;
+  demucsJobs: number;
 };
 
 function readInt(name: string, fallback: number): number {
@@ -33,10 +35,18 @@ export const config: Config = {
   ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
   checkPy: process.env.CHECK_PY ?? path.join(process.cwd(), "python", "funasr_runner.py"),
   tmpDir: process.env.TMP_DIR ?? path.join(process.cwd(), "tmp"),
+  demucsMp3Bitrate: readInt("DEMUCS_MP3_BITRATE", 256),
+  demucsJobs: readInt("DEMUCS_JOBS", 2),
 };
 
 export function validateConfig(): void {
   if (config.requireAuth && !config.bearerToken) {
     throw new Error("Missing BEARER_TOKEN (set REQUIRE_AUTH=false to disable auth).");
+  }
+  if (!Number.isFinite(config.demucsMp3Bitrate) || config.demucsMp3Bitrate <= 0) {
+    throw new Error("DEMUCS_MP3_BITRATE must be a positive integer.");
+  }
+  if (!Number.isFinite(config.demucsJobs) || config.demucsJobs <= 0) {
+    throw new Error("DEMUCS_JOBS must be a positive integer.");
   }
 }
