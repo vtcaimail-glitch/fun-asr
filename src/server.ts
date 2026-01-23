@@ -10,6 +10,9 @@ import { SerialQueue } from "./queue/serialQueue";
 import { runAsrViaPython } from "./engine/pythonAsr";
 import { downloadToFile } from "./http/download";
 import { convertToWavMono16k } from "./audio/ffmpeg";
+import { runDemucs } from "./engine/demucs";
+import { createZipViaPython } from "./engine/zipViaPython";
+import { resolvePythonBin } from "./engine/pythonBin";
 
 validateConfig();
 
@@ -44,6 +47,37 @@ const upload = multer({
   storage,
 });
 
+async function resolveAudioInput(req: express.Request, requestId: string): Promise<{
+  audioPath: string;
+  tempAudioPath?: string;
+  source: "upload" | "audioPath" | "audioUrl" | "unknown";
+}> {
+  const jsonAudioPath = (req.body?.audioPath as unknown as string | undefined)?.trim();
+  const audioUrl = (req.body?.audioUrl as unknown as string | undefined)?.trim();
+  const uploadedFilePath = (req as express.Request & { file?: { path?: string } }).file?.path;
+
+  let tempAudioPath: string | undefined = uploadedFilePath;
+  let audioPath: string | undefined = uploadedFilePath ?? jsonAudioPath;
+  const source = uploadedFilePath ? "upload" : jsonAudioPath ? "audioPath" : audioUrl ? "audioUrl" : "unknown";
+  if (!audioPath && audioUrl) {
+    const safe = audioUrl.replaceAll(/[^\w.-]/g, "_");
+    tempAudioPath = path.join(uploadDir, `${requestId}__${Date.now()}__url__${safe}`);
+    const { bytes } = await downloadToFile(audioUrl, tempAudioPath);
+    logLine(`[${requestId}]`, "downloaded", { bytes, url: audioUrl });
+    audioPath = tempAudioPath;
+  }
+
+  if (!audioPath) {
+    throw new HttpError(
+      400,
+      "bad_request",
+      "Missing audio (multipart field 'audio' or JSON audioPath or JSON audioUrl)"
+    );
+  }
+
+  return { audioPath, tempAudioPath, source };
+}
+
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) => {
@@ -69,29 +103,9 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
       );
     }
 
-    const jsonAudioPath = (req.body?.audioPath as unknown as string | undefined)?.trim();
-    const audioUrl = (req.body?.audioUrl as unknown as string | undefined)?.trim();
-    const uploadedFilePath = req.file?.path;
+    const { audioPath, tempAudioPath, source } = await resolveAudioInput(req, requestId);
 
-    let tempAudioPath: string | undefined = uploadedFilePath;
-    let audioPath: string | undefined = uploadedFilePath ?? jsonAudioPath;
-    const source = uploadedFilePath ? "upload" : jsonAudioPath ? "audioPath" : audioUrl ? "audioUrl" : "unknown";
-    if (!audioPath && audioUrl) {
-      const safe = audioUrl.replaceAll(/[^\w.-]/g, "_");
-      tempAudioPath = path.join(uploadDir, `${requestId}__${Date.now()}__url__${safe}`);
-      const { bytes } = await downloadToFile(audioUrl, tempAudioPath);
-      logLine(`[${requestId}]`, "downloaded", { bytes, url: audioUrl });
-      audioPath = tempAudioPath;
-    }
-    if (!audioPath) {
-      throw new HttpError(
-        400,
-        "bad_request",
-        "Missing audio (multipart field 'audio' or JSON audioPath or JSON audioUrl)"
-      );
-    }
-
-    if (uploadedFilePath && req.file?.size) {
+    if (req.file?.path && req.file?.size) {
       logLine(`[${requestId}]`, "received", {
         source,
         bytes: req.file.size,
@@ -174,6 +188,202 @@ app.post("/v1/asr", bearerAuth, upload.single("audio"), async (req, res, next) =
     res.setHeader("x-request-id", requestId);
     res.json({ status: "ok", data: { srt } });
   } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/v1/demucs", bearerAuth, upload.single("audio"), async (req, res, next) => {
+  try {
+    const requestId = getRequestId(req);
+    const tRequest = Date.now();
+    const { audioPath, tempAudioPath, source } = await resolveAudioInput(req, requestId);
+
+    if ((req as unknown as { file?: { size?: number } }).file?.size) {
+      logLine(`[${requestId}]`, "received_demucs", {
+        source,
+        bytes: (req as unknown as { file?: { size?: number } }).file?.size,
+        pending: queue.pending,
+        running: queue.running,
+      });
+    } else {
+      logLine(`[${requestId}]`, "received_demucs", { source, audioPath, pending: queue.pending, running: queue.running });
+    }
+
+    const perRequestOutDir = path.join(outDirRoot, requestId);
+    const tEnqueue = Date.now();
+    const job = async () => {
+      const tStart = Date.now();
+      logLine(`[${requestId}]`, "demucs_start", {
+        waitMs: tStart - tEnqueue,
+        pending: queue.pending,
+        running: queue.running,
+      });
+      await fs.promises.mkdir(perRequestOutDir, { recursive: true });
+      const demucsOutDir = path.join(perRequestOutDir, "demucs");
+
+      const tDemucs = Date.now();
+      const { vocalsPath, noVocalsPath } = await runDemucs({ audioPath, outDir: demucsOutDir });
+      logLine(`[${requestId}]`, "demucs_done", { demucsMs: Date.now() - tDemucs });
+
+      const pythonBin = resolvePythonBin();
+      const zipPath = path.join(perRequestOutDir, "demucs.zip");
+      await createZipViaPython({
+        pythonBin,
+        zipPath,
+        files: [
+          { path: vocalsPath, name: "vocals.mp3" },
+          { path: noVocalsPath, name: "no_vocals.mp3" },
+        ],
+      });
+      logLine(`[${requestId}]`, "demucs_zip_done", { totalMs: Date.now() - tRequest });
+
+      return { downloadPath: zipPath, downloadName: "demucs.zip" as const };
+    };
+
+    try {
+      const { downloadPath, downloadName } = await queue.add(job);
+      res.setHeader("x-request-id", requestId);
+      await new Promise<void>((resolve, reject) => {
+        res.download(downloadPath, downloadName, (err) => (err ? reject(err) : resolve()));
+      });
+    } finally {
+      await fs.promises.rm(perRequestOutDir, { recursive: true, force: true });
+      if (tempAudioPath) await fs.promises.rm(tempAudioPath, { force: true });
+    }
+  } catch (err) {
+    const code = (err as unknown as { code?: string }).code;
+    if (code === "DEMUCS_FAILED") {
+      const details = (err as Error)?.message ?? String(err);
+      return next(new HttpError(400, "bad_audio", "Demucs failed to process input audio", { details }));
+    }
+    next(err);
+  }
+});
+
+app.post("/v1/demucs-asr", bearerAuth, upload.single("audio"), async (req, res, next) => {
+  try {
+    const requestId = getRequestId(req);
+    const tRequest = Date.now();
+    const responseFormat = String(req.query?.format ?? "").toLowerCase(); // "zip" (default) | "json" (optional)
+
+    const vadMaxSingleSegmentMsRaw = String(req.query?.vadMaxSingleSegmentMs ?? "").trim();
+    const vadMaxEndSilenceMsRaw = String(req.query?.vadMaxEndSilenceMs ?? "").trim();
+    const vadMaxSingleSegmentMs = vadMaxSingleSegmentMsRaw
+      ? Number.parseInt(vadMaxSingleSegmentMsRaw, 10)
+      : undefined;
+    const vadMaxEndSilenceMs = vadMaxEndSilenceMsRaw ? Number.parseInt(vadMaxEndSilenceMsRaw, 10) : undefined;
+    if (
+      (vadMaxSingleSegmentMs !== undefined && (!Number.isFinite(vadMaxSingleSegmentMs) || vadMaxSingleSegmentMs <= 0)) ||
+      (vadMaxEndSilenceMs !== undefined && (!Number.isFinite(vadMaxEndSilenceMs) || vadMaxEndSilenceMs <= 0))
+    ) {
+      throw new HttpError(
+        400,
+        "bad_request",
+        "Invalid VAD params. Use positive integers: vadMaxSingleSegmentMs, vadMaxEndSilenceMs."
+      );
+    }
+
+    const { audioPath, tempAudioPath, source } = await resolveAudioInput(req, requestId);
+    logLine(`[${requestId}]`, "received_demucs_asr", {
+      source,
+      pending: queue.pending,
+      running: queue.running,
+      format: responseFormat || "zip",
+    });
+
+    const perRequestOutDir = path.join(outDirRoot, requestId);
+    const tEnqueue = Date.now();
+    const job = async () => {
+      const tStart = Date.now();
+      logLine(`[${requestId}]`, "demucs_asr_start", {
+        waitMs: tStart - tEnqueue,
+        pending: queue.pending,
+        running: queue.running,
+      });
+
+      await fs.promises.mkdir(perRequestOutDir, { recursive: true });
+
+      // 1) Demucs (first)
+      const demucsOutDir = path.join(perRequestOutDir, "demucs");
+      const tDemucs = Date.now();
+      const { vocalsPath, noVocalsPath } = await runDemucs({ audioPath, outDir: demucsOutDir });
+      logLine(`[${requestId}]`, "demucs_done", { demucsMs: Date.now() - tDemucs });
+
+      // 2) ASR (convert -> funasr)
+      const asrWavPath = path.join(perRequestOutDir, "asr.wav");
+      try {
+        const tConvert = Date.now();
+        await convertToWavMono16k({
+          ffmpegBin: config.ffmpegBin,
+          inputPath: audioPath,
+          outputWavPath: asrWavPath,
+        });
+        logLine(`[${requestId}]`, "audio_converted", { convertMs: Date.now() - tConvert });
+      } catch (err) {
+        const details = (err as Error)?.message ?? String(err);
+        throw new HttpError(400, "bad_audio", "Failed to convert input audio to wav mono 16k", { details });
+      }
+
+      let srtPath: string;
+      try {
+        const tAsr = Date.now();
+        ({ srtPath } = await runAsrViaPython({
+          audioPath: asrWavPath,
+          outDir: perRequestOutDir,
+          vadMaxSingleSegmentMs,
+          vadMaxEndSilenceMs,
+        }));
+        logLine(`[${requestId}]`, "asr_done", { asrMs: Date.now() - tAsr });
+      } catch (err) {
+        const details = (err as unknown as { details?: unknown }).details;
+        const code = (err as unknown as { code?: string }).code;
+        throw new HttpError(
+          500,
+          code === "PY_ASR_FAILED" ? "engine_error" : "internal_error",
+          "ASR engine failed",
+          details
+        );
+      }
+
+      // 3) Package result (zip by default)
+      const pythonBin = resolvePythonBin();
+      const zipPath = path.join(perRequestOutDir, "result.zip");
+      await createZipViaPython({
+        pythonBin,
+        zipPath,
+        files: [
+          { path: srtPath, name: "output.srt" },
+          { path: vocalsPath, name: "vocals.mp3" },
+          { path: noVocalsPath, name: "no_vocals.mp3" },
+        ],
+      });
+      logLine(`[${requestId}]`, "demucs_asr_done", { totalMs: Date.now() - tRequest });
+
+      return { downloadPath: zipPath, downloadName: "result.zip" as const };
+    };
+
+    try {
+      const { downloadPath, downloadName } = await queue.add(job);
+      res.setHeader("x-request-id", requestId);
+
+      if (responseFormat === "json") {
+        // Minimal fallback; still synchronous. The zip is the intended response.
+        return res.json({ status: "ok", data: { downloadName } });
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        res.download(downloadPath, downloadName, (err) => (err ? reject(err) : resolve()));
+      });
+    } finally {
+      await fs.promises.rm(perRequestOutDir, { recursive: true, force: true });
+      if (tempAudioPath) await fs.promises.rm(tempAudioPath, { force: true });
+    }
+  } catch (err) {
+    const code = (err as unknown as { code?: string }).code;
+    if (code === "DEMUCS_FAILED") {
+      const details = (err as Error)?.message ?? String(err);
+      return next(new HttpError(400, "bad_audio", "Demucs failed to process input audio", { details }));
+    }
     next(err);
   }
 });

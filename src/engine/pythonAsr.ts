@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import path from "node:path";
 import { config } from "../config";
 import { PythonAsrWorker } from "./pythonWorker";
+import { resolvePythonBin } from "./pythonBin";
 
 type RunPythonArgs = {
   audioPath: string;
@@ -9,27 +9,6 @@ type RunPythonArgs = {
   vadMaxSingleSegmentMs?: number;
   vadMaxEndSilenceMs?: number;
 };
-
-function resolvePythonBin(): string {
-  if (config.pythonBin) {
-    const looksLikePath = config.pythonBin.includes("/") || config.pythonBin.includes("\\");
-    if (looksLikePath && !fs.existsSync(config.pythonBin)) {
-      throw new Error(`PYTHON_BIN points to a missing file: ${config.pythonBin}`);
-    }
-    return config.pythonBin;
-  }
-
-  const venvPython =
-    process.platform === "win32"
-      ? path.join(process.cwd(), ".venv", "Scripts", "python.exe")
-      : path.join(process.cwd(), ".venv", "bin", "python");
-
-  if (fs.existsSync(venvPython)) return venvPython;
-
-  throw new Error(
-    `Python .venv not found. Expected ${venvPython}. Create it or set PYTHON_BIN to the venv python executable.`
-  );
-}
 
 let worker: PythonAsrWorker | undefined;
 
