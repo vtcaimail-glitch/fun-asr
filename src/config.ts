@@ -11,6 +11,7 @@ type Config = {
   tmpDir: string;
   demucsMp3Bitrate: number;
   demucsJobs: number;
+  jobTtlSeconds: number;
 };
 
 function readInt(name: string, fallback: number): number {
@@ -37,6 +38,7 @@ export const config: Config = {
   tmpDir: process.env.TMP_DIR ?? path.join(process.cwd(), "tmp"),
   demucsMp3Bitrate: readInt("DEMUCS_MP3_BITRATE", 256),
   demucsJobs: readInt("DEMUCS_JOBS", 2),
+  jobTtlSeconds: readInt("JOB_TTL_SECONDS", 6 * 60 * 60),
 };
 
 export function validateConfig(): void {
@@ -48,5 +50,8 @@ export function validateConfig(): void {
   }
   if (!Number.isFinite(config.demucsJobs) || config.demucsJobs <= 0) {
     throw new Error("DEMUCS_JOBS must be a positive integer.");
+  }
+  if (!Number.isFinite(config.jobTtlSeconds) || config.jobTtlSeconds <= 0) {
+    throw new Error("JOB_TTL_SECONDS must be a positive integer.");
   }
 }

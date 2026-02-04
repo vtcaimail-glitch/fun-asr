@@ -5,7 +5,11 @@ Server Express cung cấp 3 API chính:
 - Demucs tách vocal
 - Demucs + ASR (trả về zip gồm SRT + stems)
 
-Lưu ý: **server hiện tại không có cơ chế async jobId/poll**. Mỗi request chạy **sync** và bị **queue tuần tự (concurrency=1)** cho tất cả endpoints.
+Ngoài ra có **V2 Jobs API** (async job / poll / download artifacts) để tránh vấn đề timeout khi chạy lâu.
+
+Lưu ý:
+- **V1** (`/v1/*`) chạy **sync** và bị **queue tuần tự (concurrency=1)** cho tất cả endpoints.
+- **V2** (`/v2/jobs*`) tạo job và chạy nền (vẫn dùng **cùng queue serial**, nên throughput giống V1, nhưng không giữ HTTP connection lâu).
 
 ---
 
@@ -52,7 +56,76 @@ Do đó thời gian response = thời gian chờ queue + thời gian xử lý.
 
 ---
 
-## Input audio (áp dụng cho cả 3 endpoint `/v1/*`)
+## V2 Jobs (async)
+
+Mục tiêu của V2:
+- Tránh `Request aborted` do client/proxy timeout khi job chạy lâu.
+- Cho phép lấy kết quả theo từng phần (ví dụ `output.srt` sẵn trước khi Demucs xong).
+
+Đặc điểm:
+- Job metadata được lưu xuống disk tại `TMP_DIR/jobs-v2/<jobId>/job.json`, nên **restart server vẫn GET được job cũ** (miễn chưa bị dọn theo TTL).
+- Artifacts được lưu ở `TMP_DIR/jobs-v2/<jobId>/` và tự dọn theo TTL (`JOB_TTL_SECONDS`, default 6h) sau khi job hoàn tất.
+- Job đang `queued/running` mà server restart thì job đó sẽ được đánh dấu `failed` (vì queue không resume).
+
+Endpoints:
+- `POST /v2/jobs` (tạo job, trả `202 Accepted`)
+- `GET /v2/jobs/:id` (xem trạng thái + artifacts ready/pending)
+- `GET /v2/jobs/:id/artifacts/:name` (download artifact khi ready)
+
+### POST /v2/jobs
+
+- Auth: Bearer (tuỳ `REQUIRE_AUTH`)
+- Input audio: multipart `audio` hoặc JSON `audioPath`/`audioUrl` (giống V1)
+- Chọn loại job bằng `type` (query hoặc multipart field):
+  - `asr`
+  - `demucs`
+  - `asr-demucs` (mặc định; chạy **ASR trước**, rồi Demucs sau, rồi zip `result.zip`)
+- Query params (giống V1 ASR):
+  - `vadMaxSingleSegmentMs`, `vadMaxEndSilenceMs`
+
+Response:
+- `202 Accepted`
+- Header: `x-job-id`
+- Body có `statusUrl` để poll.
+
+Ví dụ:
+```bash
+curl -s -X POST "http://localhost:3000/v2/jobs?type=asr-demucs" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio=@D:/path/to/input.mp3"
+```
+
+### GET /v2/jobs/:id
+
+Trả về:
+- `state`: `queued | running | succeeded | failed`
+- `phase`: `asr_convert | asr | demucs | zip_* | done | error`
+- `artifacts`: map các artifact, mỗi cái có `ready` và `url` nếu đã sẵn
+
+Ví dụ:
+```bash
+curl -s "http://localhost:3000/v2/jobs/<JOB_ID>" \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+### Download artifacts
+
+Khi artifact `ready=true`, bạn tải bằng:
+- `GET /v2/jobs/:id/artifacts/:name`
+
+Các tên file thường gặp:
+- `output.srt` (job `asr` hoặc `asr-demucs`; sẵn ngay sau ASR)
+- `vocals.mp3`, `no_vocals.mp3` (job `demucs` hoặc `asr-demucs`)
+- `demucs.zip` (job `demucs` hoặc `asr-demucs`)
+- `result.zip` (chỉ job `asr-demucs`, sẵn khi cả ASR + Demucs xong)
+
+Ví dụ tải SRT trước:
+```bash
+curl -L -o output.srt "http://localhost:3000/v2/jobs/<JOB_ID>/artifacts/output.srt" \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+## Input audio (áp dụng cho `/v1/*` và `/v2/jobs`)
 
 Server nhận audio theo 1 trong 3 cách (ưu tiên theo thứ tự):
 
@@ -302,6 +375,7 @@ Trong `.env`:
 - `TMP_DIR` (default `tmp`)
 - `DEMUCS_MP3_BITRATE` (default `256`)
 - `DEMUCS_JOBS` (default `2`)
+- `JOB_TTL_SECONDS` (default `21600` = 6 giờ; TTL cleanup cho V2 job artifacts)
 
 Trong python runner (ảnh hưởng output SRT):
 - `SRT_MERGE_ENABLED` (default `false`)
