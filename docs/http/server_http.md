@@ -226,6 +226,10 @@ curl -L -o demucs.zip "http://localhost:3000/v1/demucs" \
   -F "audio=@D:/path/to/input.mp3"
 ```
 
+Lưu ý timeout:
+- Demucs/ASR có thể chạy vài phút. Nếu client hoặc reverse proxy có timeout thấp, request có thể bị ngắt giữa chừng.
+- Khi đó server có thể log `client_aborted` / `Request aborted` và client sẽ không nhận được file zip.
+
 ---
 
 ### 4) Demucs + ASR: trả về zip tổng hợp
@@ -260,6 +264,10 @@ curl -L -o result.zip "http://localhost:3000/v1/demucs-asr" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "audio=@D:/path/to/input.mp3"
 ```
+
+Lưu ý timeout:
+- Endpoint này chạy sync và có thể mất > 5 phút (tuỳ độ dài audio + GPU/CPU). Nếu client/proxy timeout, response download sẽ bị abort.
+- Nếu deploy sau reverse proxy (nginx/traefik/cloudflare), cần tăng timeout tương ứng (vd `proxy_read_timeout`, `client_body_timeout`, ...).
 
 **B) `format=json`**
 - `200 OK`

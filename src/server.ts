@@ -29,6 +29,42 @@ function logLine(prefix: string, msg: string, extra?: Record<string, unknown>) {
   console.log(`[${ts}] ${prefix} ${msg}${tail}`);
 }
 
+function isAbortError(err: unknown): boolean {
+  const mErr = err as { message?: unknown; code?: unknown };
+  if (mErr?.code === "ECONNABORTED") return true;
+  const msg = typeof mErr?.message === "string" ? mErr.message : "";
+  // Express uses this exact message in response.js's onaborted handler.
+  if (msg === "Request aborted") return true;
+  // Other common strings for peer disconnects mid-response.
+  if (msg.includes("aborted") || msg.includes("socket hang up")) return true;
+  return false;
+}
+
+async function downloadAttachment(args: {
+  req: express.Request;
+  res: express.Response;
+  requestId: string;
+  downloadPath: string;
+  downloadName: string;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    args.res.download(args.downloadPath, args.downloadName, (err) => {
+      if (!err) return resolve();
+
+      // If the client/proxy disconnects (common for long-running demucs/asr),
+      // Express reports "Request aborted". That's not a server failure.
+      if (args.req.aborted || args.res.destroyed || isAbortError(err)) {
+        logLine(`[${args.requestId}]`, "client_aborted", {
+          stage: "download",
+          message: (err as Error)?.message ?? String(err),
+        });
+        return resolve();
+      }
+      reject(err);
+    });
+  });
+}
+
 const uploadDir = path.join(config.tmpDir, "uploads");
 const outDirRoot = path.join(config.tmpDir, "out");
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -243,9 +279,7 @@ app.post("/v1/demucs", bearerAuth, upload.single("audio"), async (req, res, next
     try {
       const { downloadPath, downloadName } = await queue.add(job);
       res.setHeader("x-request-id", requestId);
-      await new Promise<void>((resolve, reject) => {
-        res.download(downloadPath, downloadName, (err) => (err ? reject(err) : resolve()));
-      });
+      await downloadAttachment({ req, res, requestId, downloadPath, downloadName });
     } finally {
       await fs.promises.rm(perRequestOutDir, { recursive: true, force: true });
       if (tempAudioPath) await fs.promises.rm(tempAudioPath, { force: true });
@@ -371,9 +405,7 @@ app.post("/v1/demucs-asr", bearerAuth, upload.single("audio"), async (req, res, 
         return res.json({ status: "ok", data: { downloadName } });
       }
 
-      await new Promise<void>((resolve, reject) => {
-        res.download(downloadPath, downloadName, (err) => (err ? reject(err) : resolve()));
-      });
+      await downloadAttachment({ req, res, requestId, downloadPath, downloadName });
     } finally {
       await fs.promises.rm(perRequestOutDir, { recursive: true, force: true });
       if (tempAudioPath) await fs.promises.rm(tempAudioPath, { force: true });
@@ -388,7 +420,12 @@ app.post("/v1/demucs-asr", bearerAuth, upload.single("audio"), async (req, res, 
   }
 });
 
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // If the peer disconnected, don't try to write a response and don't spam logs.
+  if (req.aborted || res.headersSent || res.writableEnded || res.destroyed) {
+    if (isAbortError(err) || req.aborted || res.destroyed) return;
+  }
+
   if (err instanceof HttpError) {
     return res.status(err.statusCode).json(toErrorBody(err));
   }
