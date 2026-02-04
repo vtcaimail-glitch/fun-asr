@@ -58,6 +58,8 @@ Do đó thời gian response = thời gian chờ queue + thời gian xử lý.
 
 ## V2 Jobs (async)
 
+Xem hướng dẫn chi tiết phía client tại: `docs/http/v2_jobs_client.md`.
+
 Mục tiêu của V2:
 - Tránh `Request aborted` do client/proxy timeout khi job chạy lâu.
 - Cho phép lấy kết quả theo từng phần (ví dụ `output.srt` sẵn trước khi Demucs xong).

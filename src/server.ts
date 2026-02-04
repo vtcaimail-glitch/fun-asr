@@ -393,8 +393,18 @@ async function runV2Job(job: V2Job): Promise<void> {
       }
 
       const outSrt = path.join(job.outDir, "output.srt");
-      await copyTo(srtPath, outSrt);
+      if (srtPath !== outSrt) {
+        try {
+          await fs.promises.rename(srtPath, outSrt);
+        } catch {
+          await copyTo(srtPath, outSrt);
+          await fs.promises.rm(srtPath, { force: true });
+        }
+      }
       await ensureV2Artifact(job, "srt", "output.srt", outSrt);
+
+      // Keep the job folder tidy: ASR intermediates aren't needed after SRT is ready.
+      await fs.promises.rm(asrWavPath, { force: true });
     }
 
     // Demucs stage (optional)
@@ -423,6 +433,9 @@ async function runV2Job(job: V2Job): Promise<void> {
         ],
       });
       await ensureV2Artifact(job, "demucs_zip", "demucs.zip", demucsZip);
+
+      // Keep the job folder tidy: demucs raw tree can be large, and we already copied/zip'd outputs.
+      await fs.promises.rm(demucsOutDir, { recursive: true, force: true });
     }
 
     // Result bundle (only for combined job)
