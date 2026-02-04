@@ -127,6 +127,7 @@ Optional:
 - `Content-Type: multipart/form-data`
 - Field file: `audio`
 - Có thể truyền thêm field text: `type=asr|demucs|asr-demucs` (hoặc dùng query `?type=...`)
+ - Server **không giữ nguyên original filename** (để tránh lỗi path-length trên Windows).
 
 2) JSON `audioPath`
 - `Content-Type: application/json`

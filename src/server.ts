@@ -115,6 +115,18 @@ const upload = multer({
   storage,
 });
 
+// V2 doesn't need the original filename and may hit Windows path-length limits if it's too long.
+const storageV2 = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const requestId = getRequestId(req).replaceAll(/[^\w.-]/g, "_");
+    const ext = path.extname(file.originalname) || ".bin";
+    cb(null, `${requestId}__${Date.now()}${ext}`);
+  },
+});
+
+const uploadV2 = multer({ storage: storageV2 });
+
 async function resolveAudioInput(req: express.Request, requestId: string): Promise<{
   audioPath: string;
   tempAudioPath?: string;
@@ -546,7 +558,7 @@ async function loadV2JobsFromDisk(): Promise<void> {
 
 void loadV2JobsFromDisk();
 
-app.post("/v2/jobs", bearerAuth, upload.single("audio"), async (req, res, next) => {
+app.post("/v2/jobs", bearerAuth, uploadV2.single("audio"), async (req, res, next) => {
   try {
     const requestId = getRequestId(req);
     const jobId = crypto.randomUUID();
