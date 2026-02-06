@@ -10,6 +10,7 @@ type Config = {
   checkPy: string;
   tmpDir: string;
   demucsMp3Bitrate: number;
+  demucsMp3Preset: number;
   demucsJobs: number;
   jobTtlSeconds: number;
 };
@@ -37,6 +38,7 @@ export const config: Config = {
   checkPy: process.env.CHECK_PY ?? path.join(process.cwd(), "python", "funasr_runner.py"),
   tmpDir: process.env.TMP_DIR ?? path.join(process.cwd(), "tmp"),
   demucsMp3Bitrate: readInt("DEMUCS_MP3_BITRATE", 256),
+  demucsMp3Preset: readInt("DEMUCS_MP3_PRESET", 2),
   demucsJobs: readInt("DEMUCS_JOBS", 2),
   jobTtlSeconds: readInt("JOB_TTL_SECONDS", 6 * 60 * 60),
 };
@@ -47,6 +49,9 @@ export function validateConfig(): void {
   }
   if (!Number.isFinite(config.demucsMp3Bitrate) || config.demucsMp3Bitrate <= 0) {
     throw new Error("DEMUCS_MP3_BITRATE must be a positive integer.");
+  }
+  if (!Number.isFinite(config.demucsMp3Preset) || config.demucsMp3Preset < 2 || config.demucsMp3Preset > 7) {
+    throw new Error("DEMUCS_MP3_PRESET must be an integer between 2 and 7.");
   }
   if (!Number.isFinite(config.demucsJobs) || config.demucsJobs <= 0) {
     throw new Error("DEMUCS_JOBS must be a positive integer.");

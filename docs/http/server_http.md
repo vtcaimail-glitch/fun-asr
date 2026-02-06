@@ -297,7 +297,7 @@ Python runner dùng mặc định:
 2) Chạy Demucs bằng python: `python -m demucs.separate ...`
    - Model: `htdemucs_ft`
    - Two-stems: `vocals`
-   - Output mp3 với bitrate `DEMUCS_MP3_BITRATE` và jobs `DEMUCS_JOBS`
+   - Output mp3 với bitrate `DEMUCS_MP3_BITRATE`, preset `DEMUCS_MP3_PRESET`, và jobs `DEMUCS_JOBS`
    - Nếu fail -> `400 bad_audio` (`Demucs failed to process input audio`)
 3) Zip kết quả (python zip) -> trả về download
 4) Cleanup thư mục tạm và audio tạm (nếu có)
@@ -384,6 +384,7 @@ Trong `.env`:
 - `CHECK_PY` (default `python/funasr_runner.py`)
 - `TMP_DIR` (default `tmp`)
 - `DEMUCS_MP3_BITRATE` (default `256`)
+- `DEMUCS_MP3_PRESET` (default `2`, integer `2..7`)
 - `DEMUCS_JOBS` (default `2`)
 - `JOB_TTL_SECONDS` (default `21600` = 6 giờ; TTL cleanup cho V2 job artifacts)
 

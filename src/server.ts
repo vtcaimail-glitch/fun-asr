@@ -11,7 +11,7 @@ import { SerialQueue } from "./queue/serialQueue";
 import { runAsrViaPython } from "./engine/pythonAsr";
 import { downloadToFile } from "./http/download";
 import { convertToWavMono16k } from "./audio/ffmpeg";
-import { runDemucs } from "./engine/demucs";
+import { getDemucsRuntimeSettings, runDemucs } from "./engine/demucs";
 import { createZipViaPython } from "./engine/zipViaPython";
 import { resolvePythonBin } from "./engine/pythonBin";
 
@@ -28,6 +28,10 @@ function logLine(prefix: string, msg: string, extra?: Record<string, unknown>) {
   const ts = new Date().toISOString();
   const tail = extra ? ` ${JSON.stringify(extra)}` : "";
   console.log(`[${ts}] ${prefix} ${msg}${tail}`);
+}
+
+function toSeconds(ms: number): number {
+  return Number((ms / 1000).toFixed(2));
 }
 
 function isAbortError(err: unknown): boolean {
@@ -617,8 +621,13 @@ async function runV2Job(job: V2Job): Promise<void> {
     if (job.type === "demucs" || job.type === "asr-demucs") {
       job.phase = "demucs";
       await persistV2Job(job);
+      const demucsSettings = getDemucsRuntimeSettings();
+      logLine(`[${job.id}]`, "v2_demucs_start", { ...demucsSettings, audioPath: job.audioPath });
       const demucsOutDir = path.join(job.outDir, "demucs");
+      const tDemucs = Date.now();
       const { vocalsPath, noVocalsPath } = await runDemucs({ audioPath: job.audioPath, outDir: demucsOutDir });
+      const demucsMs = Date.now() - tDemucs;
+      logLine(`[${job.id}]`, "v2_demucs_done", { demucsMs, demucsSec: toSeconds(demucsMs) });
       const outVocals = path.join(job.outDir, "vocals.mp3");
       const outNoVocals = path.join(job.outDir, "no_vocals.mp3");
       await copyTo(vocalsPath, outVocals);
@@ -985,6 +994,13 @@ async function runV2Batch(batch: V2Batch): Promise<void> {
         const demucsOutDir = path.join(itemDir, "demucs");
         let vocalsPath: string;
         let noVocalsPath: string;
+        const demucsSettings = getDemucsRuntimeSettings();
+        logLine(`[${batch.id}]`, "v2_batch_demucs_start", {
+          idx: it.idx,
+          ...demucsSettings,
+          audioPath: it.audioPath,
+        });
+        const tDemucs = Date.now();
         try {
           ({ vocalsPath, noVocalsPath } = await runDemucs({ audioPath: it.audioPath, outDir: demucsOutDir }));
         } catch (err) {
@@ -996,6 +1012,8 @@ async function runV2Batch(batch: V2Batch): Promise<void> {
           await persistV2Batch(batch);
           continue;
         }
+        const demucsMs = Date.now() - tDemucs;
+        logLine(`[${batch.id}]`, "v2_batch_demucs_done", { idx: it.idx, demucsMs, demucsSec: toSeconds(demucsMs) });
 
         const outVocals = path.join(itemDir, "vocals.mp3");
         const outNoVocals = path.join(itemDir, "no_vocals.mp3");
@@ -1554,17 +1572,20 @@ app.post("/v1/demucs", bearerAuth, upload.single("audio"), async (req, res, next
     const tEnqueue = Date.now();
     const job = async () => {
       const tStart = Date.now();
+      const demucsSettings = getDemucsRuntimeSettings();
       logLine(`[${requestId}]`, "demucs_start", {
         waitMs: tStart - tEnqueue,
         pending: queue.pending,
         running: queue.running,
+        ...demucsSettings,
       });
       await fs.promises.mkdir(perRequestOutDir, { recursive: true });
       const demucsOutDir = path.join(perRequestOutDir, "demucs");
 
       const tDemucs = Date.now();
       const { vocalsPath, noVocalsPath } = await runDemucs({ audioPath, outDir: demucsOutDir });
-      logLine(`[${requestId}]`, "demucs_done", { demucsMs: Date.now() - tDemucs });
+      const demucsMs = Date.now() - tDemucs;
+      logLine(`[${requestId}]`, "demucs_done", { demucsMs, demucsSec: toSeconds(demucsMs) });
 
       const pythonBin = resolvePythonBin();
       const zipPath = path.join(perRequestOutDir, "demucs.zip");
@@ -1634,10 +1655,12 @@ app.post("/v1/demucs-asr", bearerAuth, upload.single("audio"), async (req, res, 
     const tEnqueue = Date.now();
     const job = async () => {
       const tStart = Date.now();
+      const demucsSettings = getDemucsRuntimeSettings();
       logLine(`[${requestId}]`, "demucs_asr_start", {
         waitMs: tStart - tEnqueue,
         pending: queue.pending,
         running: queue.running,
+        ...demucsSettings,
       });
 
       await fs.promises.mkdir(perRequestOutDir, { recursive: true });
@@ -1646,7 +1669,8 @@ app.post("/v1/demucs-asr", bearerAuth, upload.single("audio"), async (req, res, 
       const demucsOutDir = path.join(perRequestOutDir, "demucs");
       const tDemucs = Date.now();
       const { vocalsPath, noVocalsPath } = await runDemucs({ audioPath, outDir: demucsOutDir });
-      logLine(`[${requestId}]`, "demucs_done", { demucsMs: Date.now() - tDemucs });
+      const demucsMs = Date.now() - tDemucs;
+      logLine(`[${requestId}]`, "demucs_done", { demucsMs, demucsSec: toSeconds(demucsMs) });
 
       // 2) ASR (convert -> funasr)
       const asrWavPath = path.join(perRequestOutDir, "asr.wav");

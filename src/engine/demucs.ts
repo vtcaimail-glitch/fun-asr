@@ -12,6 +12,26 @@ type DemucsResult = {
 const DEFAULT_DEMUCS_MODEL = "htdemucs_ft";
 const DEFAULT_DEMUCS_TWO_STEMS = "vocals";
 
+export type DemucsRuntimeSettings = {
+  model: string;
+  twoStems: string;
+  mp3: boolean;
+  mp3Bitrate: number;
+  mp3Preset: number;
+  jobs: number;
+};
+
+export function getDemucsRuntimeSettings(): DemucsRuntimeSettings {
+  return {
+    model: DEFAULT_DEMUCS_MODEL,
+    twoStems: DEFAULT_DEMUCS_TWO_STEMS,
+    mp3: true,
+    mp3Bitrate: config.demucsMp3Bitrate,
+    mp3Preset: config.demucsMp3Preset,
+    jobs: config.demucsJobs,
+  };
+}
+
 async function walkFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   const stack = [root];
@@ -63,6 +83,8 @@ export async function runDemucs(args: { audioPath: string; outDir: string }): Pr
     "--mp3",
     "--mp3-bitrate",
     String(config.demucsMp3Bitrate),
+    "--mp3-preset",
+    String(config.demucsMp3Preset),
     "-j",
     String(config.demucsJobs),
   ];
