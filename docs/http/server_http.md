@@ -74,6 +74,14 @@ Endpoints:
 - `GET /v2/jobs/:id` (xem trạng thái + artifacts ready/pending)
 - `GET /v2/jobs/:id/artifacts/:name` (download artifact khi ready)
 
+---
+
+## V2 Batches (async, stage-first)
+
+Batch = chạy tối đa 10 items theo policy **ASR all → Demucs all**.
+
+Xem hướng dẫn chi tiết phía client tại: `docs/http/v2_batches_client.md`.
+
 ### POST /v2/jobs
 
 - Auth: Bearer (tuỳ `REQUIRE_AUTH`)
